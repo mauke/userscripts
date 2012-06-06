@@ -6,33 +6,115 @@
 // @include       https://rt.perl.org/*
 // ==/UserScript==
 
+function process_ranges_under(root, predicate, body, kont) {
+	if (predicate(root)) {
+		let range = document.createRange();
+		range.selectNode(root);
+		return body(range, kont);
+	}
+
+	let queue = [root];
+
+	let loop_tree = function loop_tree() {
+		while (queue.length) {
+			let node = queue.shift();
+			if (node.nodeType !== node.ELEMENT_NODE) {
+				continue;
+			}
+
+			let loop_children = function loop_children(p) {
+				while (p) {
+					if (!predicate(p)) {
+						queue.push(p);
+						p = p.nextSibling;
+						continue;
+					}
+
+					let range = document.createRange();
+					range.setStartBefore(p);
+					while (p.nextSibling && predicate(p.nextSibling)) {
+						p = p.nextSibling;
+					}
+					range.setEndAfter(p);
+					p = p.nextSibling;
+					return body(range, function () {
+						return loop_children(p);
+					});
+				}
+				return loop_tree();
+			};
+
+			return loop_children(node.firstChild);
+		}
+		return kont();
+	};
+	return loop_tree();
+}
+
+function is_kinda_text(node) {
+	return (
+		node.nodeType === node.TEXT_NODE ||
+		node.nodeType === node.ELEMENT_NODE && node.nodeName === 'BR'
+	);
+}
+
+function replace_text_under(root, body, kont) {
+	return process_ranges_under(
+		root,
+		is_kinda_text,
+		function (range, kont_inner) {
+			let synth = '';
+			let frag = range.extractContents();
+			for (let p = frag.firstChild; p; p = p.nextSibling) {
+				synth += p.nodeType === p.TEXT_NODE ? p.nodeValue : '\0';
+			}
+			return body(synth, function (x) {
+				range.insertNode(x);
+				return kont_inner();
+			});
+		},
+		kont
+	);
+}
+
 function xpath(expr, doc) {
 	doc = doc || document;
 	return doc.evaluate(expr, doc, null, XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
 }
 
-let ts = xpath('//div[@class="messagebody"]//text()');
+function autolink(text, kont_outer) {
+	let re = /(?:\b(?:bug|fix\w*|perl))?[\0\s]+#(\d{3,})|(\b(?:(?:applied|patch)[\0\s]+(?:\w+[\0\s]+)*?as|in|by|commit)[\0\s]+)(?!default)([\da-f]{4,}(?:[\0\s]*(?:,|(?:,[\0\s]*)?(?:and|or)[\0\s])[\0\s]*[\da-f]{4,})*)|(applied[\0\s]+as[\0\s]+)(#\d{2,})/ig;
+	//                                          [$1^^^^] [$2^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^]           [$3^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^] [$4^^^^^^^^^^^^^^^^^^^^^][$5^^^^^]
 
-for (let i = 0; i < ts.snapshotLength; ++i) {
-	let t = ts.snapshotItem(i);
-	let text = t.nodeValue;
-	GM_log(text.toSource());
 	let prev = 0;
 	let frag = document.createDocumentFragment();
-	let re = /(?:\b(?:bug|fix\w*|perl))?\s+#(\d{3,})|(?:(\b(?:(?:applied|patch)\s+(?:\w+\s+)*?as|in|by)\s+)|(commit\s*))(?!default)([\da-f]{4,}(?:\s*(?:,|(?:,\s*)?(?:and|or)\s)\s*[\da-f]{4,})*)|(applied\s+as\s+)(#\d{2,})/ig;
-	//                                      [$1^^^^]    [$2^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^] [$3^^^^^^^] [$4^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^] [$5^^^^^^^^^^^^^][$6^^^^^]
+
+	function autotext_from(t, a, z) {
+		let chunk = t.slice(a, z);
+		let pieces = chunk.match(/[^\0]+|\0/g) || [];
+		for (let i = 0; i < pieces.length; i++) {
+			let p = pieces[i];
+			let x = p === '\0'
+				? document.createElement('br')
+				: document.createTextNode(p)
+			;
+			frag.appendChild(x);
+		}
+	}
+
+	function autotext(to) {
+		autotext_from(text, prev, to);
+	}
+
 	function step(kont) {
 		let m = re.exec(text);
 		if (!m) {
 			return kont();
 		}
-		let pre = text.slice(prev, m.index + (m[2] || m[5] || '').length);
-		if (pre !== '') {
-			frag.appendChild(document.createTextNode(pre));
-		}
+		autotext(m.index + (m[2] || m[4] || '').length);
 
 		let link_url, link_text;
-		let local_kont = function () {
+		let kont_local = function () {
 			let a = document.createElement('a');
 			a.href = link_url;
 			a.appendChild(document.createTextNode(link_text));
@@ -41,45 +123,40 @@ for (let i = 0; i < ts.snapshotLength; ++i) {
 			prev = re.lastIndex;
 			return step(kont);
 		};
+
 		if (m[1]) {
 			link_url = 'http://rt.perl.org/rt3/Public/Bug/Display.html?id=' + m[1];
 			link_text = m[0];
-		} else if (m[4]) {
-			if (/^[\da-f]+$/i.test(m[4])) {
-				link_url = 'http://perl5.git.perl.org/perl.git/commitdiff/' + m[4];
-				link_text = (m[3] || '') + m[4];
+		} else if (m[3]) {
+			if (/^[\da-f]+$/i.test(m[3])) {
+				link_url = 'http://perl5.git.perl.org/perl.git/commitdiff/' + m[3];
+				link_text = m[3];
 			} else {
-				let t = (m[3] || '') + m[4];
+				let t = m[3];
 				let p = 0;
 				let re2 = /\b[\da-f]+\b/ig;
 				let m2;
 				while ((m2 = re2.exec(t))) {
-					let tg = t.slice(p, m2.index);
-					if (tg !== '') {
-						frag.appendChild(document.createTextNode(tg));
-					}
+					autotext_from(t, p, m2.index);
 					let a = document.createElement('a');
 					a.href = 'http://perl5.git.perl.org/perl.git/commitdiff/' + m2[0];
 					a.appendChild(document.createTextNode(m2[0]));
 					frag.appendChild(a);
 					p = re2.lastIndex;
 				}
-				let tg = t.slice(p);
-				if (tg !== '') {
-					frag.appendChild(document.createTextNode(tg));
-				}
+				autotext_from(t, p, t.length);
 				prev = re.lastIndex;
 				return step(kont);
 			}
 		} else {
-			let srch = 'http://perl5.git.perl.org/perl.git?a=search&h=HEAD&st=commit&s=' + encodeURIComponent('@' + m[6].substr(1));
+			let srch = 'http://perl5.git.perl.org/perl.git?a=search&h=HEAD&st=commit&s=' + encodeURIComponent('@' + m[5].substr(1));
 			return GM_xmlhttpRequest({
 				method: 'GET',
 				synchronous: false,
 				url: srch,
 				onreadystatechange: function (r) {
 					if (r.readyState !== 4) return;
-					link_text = m[6];
+					link_text = m[5];
 					link_url = srch;
 					if (r.status === 200) {
 						let xml = r.responseXML || new DOMParser().parseFromString(r.responseText, 'text/xml');
@@ -93,55 +170,22 @@ for (let i = 0; i < ts.snapshotLength; ++i) {
 							}
 						}
 					}
-					return local_kont();
+					return kont_local();
 				},
 			});
 		}
-		return local_kont();
+
+		return kont_local();
 	}
+
 	step(function () {
-		let fin = text.slice(prev);
-		if (fin !== '') {
-			frag.appendChild(document.createTextNode(fin));
-		}
-
-		let p = t.parentNode;
-		//p.insertBefore(frag, t.nextSibling);
-		//p.removeChild(t);
-		p.replaceChild(frag, t);
+		autotext(text.length);
+		return kont_outer(frag);
 	});
-	// while ((m = re.exec(text))) {
-	// 	let pre = text.slice(prev, m.index + (m[2] || m[5] || '').length);
-	// 	if (pre !== '') {
-	// 		frag.appendChild(document.createTextNode(pre));
-	// 	}
+}
 
-	// 	let a = document.createElement('a');
-	// 	if (m[1]) {
-	// 		a.href = 'http://rt.perl.org/rt3/Public/Bug/Display.html?id=' + m[1];
-	// 		a.appendChild(document.createTextNode(m[0]));
-	// 	} else if (m[4]) {
-	// 		a.href = 'http://perl5.git.perl.org/perl.git/commitdiff/' + m[4];
-	// 		a.appendChild(document.createTextNode((m[3] || '') + m[4]));
-	// 	} else {
-	// 		let srch = 'http://perl5.git.perl.org/perl.git?a=search&h=HEAD&st=commit&s=' + encodeURIComponent('@' + m[6].substr(1));
-	// 		a.href = url;
-	// 		a.appendChild(document.createTextNode(m[6]));
-	// 	}
-	// 	frag.appendChild(a);
-
-	// 	prev = re.lastIndex;
-	// }
-	// if (!frag.hasChildNodes()) {
-	// 	continue;
-	// }
-	// let fin = text.slice(prev);
-	// if (fin !== '') {
-	// 	frag.appendChild(document.createTextNode(fin));
-	// }
-
-	// let p = t.parentNode;
-	// //p.insertBefore(frag, t.nextSibling);
-	// //p.removeChild(t);
-	// p.replaceChild(frag, t);
+let roots = document.querySelectorAll('div.messagebody');
+for (let i = 0; i < roots.length; i++) {
+	let root = roots[i];
+	replace_text_under(root, autolink, function () {});
 }
