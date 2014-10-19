@@ -9,41 +9,41 @@
 // ==/UserScript==
 
 function xpath(expr, doc) {
-	doc = doc || document;
-	return doc.evaluate(expr, doc, null, XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+    doc = doc || document;
+    return doc.evaluate(expr, doc, null, XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
 }
 
 let ts = xpath('//*[name()="div" and (@class="page_body" or @class="header")]//text()');
 
 for (let i = 0; i < ts.snapshotLength; ++i) {
-	let t = ts.snapshotItem(i);
-	let text = t.nodeValue;
-	let prev = 0;
-	let frag = document.createDocumentFragment();
-	let re = /(?:#|(?:bug|perl)\s+(?:#|(?=\d{2})))(\d+)/ig;
-	while ((m = re.exec(text))) {
-		let pre = text.slice(prev, m.index);
-		if (pre !== '') {
-			frag.appendChild(document.createTextNode(pre));
-		}
+    let t = ts.snapshotItem(i);
+    let text = t.nodeValue;
+    let prev = 0;
+    let frag = document.createDocumentFragment();
+    let re = /(?:#|(?:bug|perl)\s+(?:#|(?=\d{2})))(\d+)/ig;
+    while ((m = re.exec(text))) {
+        let pre = text.slice(prev, m.index);
+        if (pre !== '') {
+            frag.appendChild(document.createTextNode(pre));
+        }
 
-		let a = document.createElement('a');
-		a.href = 'http://rt.perl.org/rt3/Public/Bug/Display.html?id=' + m[1];
-		a.appendChild(document.createTextNode(m[0]));
-		frag.appendChild(a);
+        let a = document.createElement('a');
+        a.href = 'http://rt.perl.org/rt3/Public/Bug/Display.html?id=' + m[1];
+        a.appendChild(document.createTextNode(m[0]));
+        frag.appendChild(a);
 
-		prev = re.lastIndex;
-	}
-	if (!frag.hasChildNodes()) {
-		continue;
-	}
-	let fin = text.slice(prev);
-	if (fin !== '') {
-		frag.appendChild(document.createTextNode(fin));
-	}
+        prev = re.lastIndex;
+    }
+    if (!frag.hasChildNodes()) {
+        continue;
+    }
+    let fin = text.slice(prev);
+    if (fin !== '') {
+        frag.appendChild(document.createTextNode(fin));
+    }
 
-	let p = t.parentNode;
-	//p.insertBefore(frag, t.nextSibling);
-	//p.removeChild(t);
-	p.replaceChild(frag, t);
+    let p = t.parentNode;
+    //p.insertBefore(frag, t.nextSibling);
+    //p.removeChild(t);
+    p.replaceChild(frag, t);
 }
