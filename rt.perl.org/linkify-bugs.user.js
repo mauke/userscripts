@@ -2,9 +2,13 @@
 // @name          Linkify bug comments (rt.perl.org)
 // @namespace     [mauke]/rt.perl.org
 // @description   turn commit references into clickable links
-// @include       http://rt.perl.org/*
-// @include       https://rt.perl.org/*
+// @match         http://rt.perl.org/*
+// @match         https://rt.perl.org/*
+// @grant         GM_xmlhttpRequest
+// @version       1.0.0
 // ==/UserScript==
+
+'use strict';
 
 function process_ranges_under(root, predicate, body, kont) {
     if (predicate(root)) {
@@ -83,8 +87,8 @@ function xpath(expr, doc) {
 }
 
 function autolink(text, kont_outer) {
-    let re = /(?:\b(?:bug|fix\w*|perl))?[\0\s]+#(\d{3,})|(\b(?:(?:applied|patch)[\0\s]+(?:\w+[\0\s]+)*?as|by|commit|in|of|with)[\0\s]+)(?!default)([\da-f]{4,}(?:[\0\s]*(?:,|(?:,[\0\s]*)?(?:and|or)[\0\s])[\0\s]*[\da-f]{4,})*)|(applied[\0\s]+as[\0\s]+)(#\d{2,})/ig;
-    //                                          [$1^^^^] [$2^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^]           [$3^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^] [$4^^^^^^^^^^^^^^^^^^^^^][$5^^^^^]
+    let re = /(?:\b(?:bug|fix\w*|perl))?[\0\s]+#(\d{3,})|(\b(?:(?:applied|patch)[\0\s]+(?:\w+[\0\s]+)*?as|by|commit|in|of|with)[\0\s]+)(?!default)([\da-f]{4,}(?:[\0\s]*(?:,|(?:,[\0\s]*)?(?:and|or)[\0\s])[\0\s]*[\da-f]{4,})*)|(applied[\0\s]+as[\0\s]+|change[\0\s]*)(#\d{2,})/ig;
+    //                                          [$1^^^^] [$2^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^]           [$3^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^] [$4^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^][$5^^^^^]
 
     let prev = 0;
     let frag = document.createDocumentFragment();
@@ -154,20 +158,16 @@ function autolink(text, kont_outer) {
                 method: 'GET',
                 synchronous: false,
                 url: srch,
+                responseType: 'document',
                 onreadystatechange: function (r) {
                     if (r.readyState !== 4) return;
                     link_text = m[5];
                     link_url = srch;
-                    if (r.status === 200) {
-                        let xml = r.responseXML || new DOMParser().parseFromString(r.responseText, 'text/xml');
-                        //GM_log(JSON.stringify({status: r.status, xml: !!xml}));
-                        if (xml) {
-                            let results = xpath('//*[name()="table"][@class="commit_search"]//*[name()="tr"]/*[name()="td"][@class="link"]/*[name()="a"][text()="commitdiff"]', xml);
-                            //GM_log(results + ' - ' + results.snapshotLength);
-                            if (results && results.snapshotLength === 1) {
-                                let base = (/^\w+:\/\/[^\/]+/.exec(r.finalUrl) || ['http://perl5.git.perl.org'])[0];
-                                link_url = results.snapshotItem(0).href.replace(/^(?=\/)/, function () base);
-                            }
+                    if (r.status === 200 && typeof r.response === 'object') {
+                        let results = xpath('//*[name()="table"][@class="commit_search"]//*[name()="tr"]/*[name()="td"][@class="link"]/*[name()="a"][text()="commitdiff"]', r.response);
+                        if (results && results.snapshotLength === 1) {
+                            let base = (/^\w+:\/\/[^\/]+/.exec(r.finalUrl) || ['http://perl5.git.perl.org'])[0];
+                            link_url = results.snapshotItem(0).href.replace(/^(?=\/)/, function () base);
                         }
                     }
                     return kont_local();

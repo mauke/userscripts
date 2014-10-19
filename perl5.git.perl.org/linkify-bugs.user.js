@@ -2,11 +2,15 @@
 // @name          Linkify commit comments (perl5.git.perl.org)
 // @namespace     [mauke]/perl5.git.perl.org
 // @description   turn bug references into clickable links
-// @include       http://perl5.git.perl.org/perl.git/commit/*
-// @include       https://perl5.git.perl.org/perl.git/commit/*
-// @include       http://perl5.git.perl.org/perl.git/commitdiff/*
-// @include       https://perl5.git.perl.org/perl.git/commitdiff/*
+// @match         http://perl5.git.perl.org/perl.git/commit/*
+// @match         https://perl5.git.perl.org/perl.git/commit/*
+// @match         http://perl5.git.perl.org/perl.git/commitdiff/*
+// @match         https://perl5.git.perl.org/perl.git/commitdiff/*
+// @grant         none
+// @version       1.0.0
 // ==/UserScript==
+
+'use strict';
 
 function xpath(expr, doc) {
     doc = doc || document;
@@ -21,6 +25,7 @@ for (let i = 0; i < ts.snapshotLength; ++i) {
     let prev = 0;
     let frag = document.createDocumentFragment();
     let re = /(?:#|(?:bug|perl)\s+(?:#|(?=\d{2})))(\d+)/ig;
+    let m;
     while ((m = re.exec(text))) {
         let pre = text.slice(prev, m.index);
         if (pre !== '') {
