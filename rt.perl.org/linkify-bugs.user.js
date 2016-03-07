@@ -5,10 +5,20 @@
 // @match         http://rt.perl.org/*
 // @match         https://rt.perl.org/*
 // @grant         GM_xmlhttpRequest
-// @version       1.0.0
+// @version       1.0.2
 // ==/UserScript==
 
 'use strict';
+
+const RT_TICKET = 'http://rt.perl.org/rt3/Public/Bug/Display.html?id=';
+
+const GIT_BASE = 'http://perl5.git.perl.org';
+const GIT_REPO = GIT_BASE + '/perl.git';
+const GIT_COMMITDIFF = GIT_REPO + '/commitdiff/';
+
+function search_git_for(s) {
+    return GIT_REPO + '?a=search&h=HEAD&st=commit&s=' + encodeURIComponent(s);
+}
 
 function process_ranges_under(root, predicate, body, kont) {
     if (predicate(root)) {
@@ -41,9 +51,7 @@ function process_ranges_under(root, predicate, body, kont) {
                     }
                     range.setEndAfter(p);
                     p = p.nextSibling;
-                    return body(range, function () {
-                        return loop_children(p);
-                    });
+                    return body(range, () => loop_children(p));
                 }
                 return loop_tree();
             };
@@ -72,7 +80,7 @@ function replace_text_under(root, body, kont) {
             for (let p = frag.firstChild; p; p = p.nextSibling) {
                 synth += p.nodeType === p.TEXT_NODE ? p.nodeValue : '\0';
             }
-            return body(synth, function (x) {
+            return body(synth, (x) => {
                 range.insertNode(x);
                 return kont_inner();
             });
@@ -83,12 +91,98 @@ function replace_text_under(root, body, kont) {
 
 function xpath(expr, doc) {
     doc = doc || document;
-    return doc.evaluate(expr, doc, null, XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE, null);
+    return doc.evaluate(expr, doc, () => 'http://www.w3.org/1999/xhtml', XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
 }
 
 function autolink(text, kont_outer) {
-    let re = /(?:\b(?:bug|fix\w*|perl))?[\0\s]+#(\d{3,})|(\b(?:(?:applied|patch)[\0\s]+(?:\w+[\0\s]+)*?as|by|commit|in|of|with)[\0\s]+)(?!default)([\da-f]{4,}(?:[\0\s]*(?:,|(?:,[\0\s]*)?(?:and|or)[\0\s])[\0\s]*[\da-f]{4,})*)|(applied[\0\s]+as[\0\s]+|change[\0\s]*)(#\d{2,})/ig;
-    //                                          [$1^^^^] [$2^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^]           [$3^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^] [$4^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^][$5^^^^^]
+    let re = function () {
+
+        let bug_re = (
+            '(?:' +
+                '\\b' +
+                '(?:' +
+                    'bug' +
+                '|' +
+                    'fix\\w*' +
+                '|' +
+                    'perl' +
+                ')' +
+            ')?' +
+            '[\\0\\s]+' +
+            '#' +
+            // $1
+            '(' +
+                '\\d{2,}' +
+            ')' +
+            '\\b'
+        );
+
+        let commit_re = (
+            // $2
+            '(' +
+                '\\b' +
+                '(?:' +
+                    'as' +
+                '|' +
+                    'by' +
+                '|' +
+                    'commit' +
+                '|' +
+                    'in' +
+                '|' +
+                    'of' +
+                '|' +
+                    'with' +
+                ')' +
+                '[\\0\\s]+' +
+            '|' +
+                '[(:\\0]' +
+                '[\\0\\s]*' +
+            ')' +
+            // $3
+            '(' +
+                '[\\da-f]{4,}' + '\\b' +
+                '(?:' +
+                    '[\\0\\s]*' +
+                    '(?:' +
+                        ',' +
+                    '|' +
+                        '(?:' +
+                            ',' +
+                            '[\\0\\s]*' +
+                        ')?' +
+                        '(?:' +
+                            'and' +
+                        '|' +
+                            'or' +
+                        ')' +
+                        '[\\0\\s]' +
+                    ')' +
+                    '[\\0\\s]*' +
+                    '[\\da-f]{4,}' + '\\b' +
+                ')*' +
+            ')'
+        );
+
+        let p4id_re = (
+            // $4
+            '(' +
+                'applied' +
+                '[\\0\\s]+' +
+                'as' +
+                '[\\0\\s]+' +
+            '|' +
+                'change' +
+                '[\\0\\s]*' +
+            ')' +
+            // $5
+            '(' +
+                '#' + '\\d{2,}' + '\\b' +
+            ')'
+        );
+
+        return new RegExp([bug_re, commit_re, p4id_re].join('|'), 'ig');
+    }();
 
     let prev = 0;
     let frag = document.createDocumentFragment();
@@ -96,8 +190,7 @@ function autolink(text, kont_outer) {
     function autotext_from(t, a, z) {
         let chunk = t.slice(a, z);
         let pieces = chunk.match(/[^\0]+|\0/g) || [];
-        for (let i = 0; i < pieces.length; i++) {
-            let p = pieces[i];
+        for (let p of pieces) {
             let x = p === '\0'
                 ? document.createElement('br')
                 : document.createTextNode(p)
@@ -129,21 +222,21 @@ function autolink(text, kont_outer) {
         };
 
         if (m[1]) {
-            link_url = 'http://rt.perl.org/rt3/Public/Bug/Display.html?id=' + m[1];
+            link_url = RT_TICKET + m[1];
             link_text = m[0];
         } else if (m[3]) {
-            if (/^[\da-f]+$/i.test(m[3])) {
-                link_url = 'http://perl5.git.perl.org/perl.git/commitdiff/' + m[3];
+            if (/^[\da-fA-F]+$/.test(m[3])) {
+                link_url = GIT_COMMITDIFF + m[3];
                 link_text = m[3];
             } else {
                 let t = m[3];
                 let p = 0;
-                let re2 = /\b[\da-f]+\b/ig;
+                let re2 = /\b[\da-fA-F]{4,}\b/g;
                 let m2;
                 while ((m2 = re2.exec(t))) {
                     autotext_from(t, p, m2.index);
                     let a = document.createElement('a');
-                    a.href = 'http://perl5.git.perl.org/perl.git/commitdiff/' + m2[0];
+                    a.href = GIT_COMMITDIFF + m2[0];
                     a.appendChild(document.createTextNode(m2[0]));
                     frag.appendChild(a);
                     p = re2.lastIndex;
@@ -153,21 +246,28 @@ function autolink(text, kont_outer) {
                 return step(kont);
             }
         } else {
-            let srch = 'http://perl5.git.perl.org/perl.git?a=search&h=HEAD&st=commit&s=' + encodeURIComponent('@' + m[5].substr(1));
+            let srch = search_git_for('@' + m[5].substr(1));
             return GM_xmlhttpRequest({
-                method: 'GET',
-                synchronous: false,
-                url: srch,
-                responseType: 'document',
+                method:             'GET',
+                synchronous:        false,
+                url:                srch,
+                responseType:       'document',
                 onreadystatechange: function (r) {
                     if (r.readyState !== 4) return;
                     link_text = m[5];
                     link_url = srch;
                     if (r.status === 200 && typeof r.response === 'object') {
-                        let results = xpath('//*[name()="table"][@class="commit_search"]//*[name()="tr"]/*[name()="td"][@class="link"]/*[name()="a"][text()="commitdiff"]', r.response);
+                        let results = xpath(
+                            '//h:table[@class="commit_search"]' +
+                            '//h:tr' +
+                                '[h:td/h:span[@class="match"][not(following-sibling::text())]]' +
+                            '/h:td[@class="link"]' +
+                            '/h:a[text()="commitdiff"][last()]',
+                            r.response
+                        );
                         if (results && results.snapshotLength === 1) {
-                            let base = (/^\w+:\/\/[^\/]+/.exec(r.finalUrl) || ['http://perl5.git.perl.org'])[0];
-                            link_url = results.snapshotItem(0).href.replace(/^(?=\/)/, function () base);
+                            let base = (/^\w+:\/\/[^\/]+/.exec(r.finalUrl) || [GIT_BASE])[0];
+                            link_url = results.snapshotItem(0).href.replace(/^(?=\/)/, () => base);
                         }
                     }
                     return kont_local();
@@ -185,7 +285,6 @@ function autolink(text, kont_outer) {
 }
 
 let roots = document.querySelectorAll('div.messagebody');
-for (let i = 0; i < roots.length; i++) {
-    let root = roots[i];
-    replace_text_under(root, autolink, function () {});
+for (let root of roots) {
+    replace_text_under(root, autolink, () => {});
 }
